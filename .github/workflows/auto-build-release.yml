@@ -1,0 +1,82 @@
+name: Auto Sync, Build, and Release
+
+on:
+  workflow_dispatch:        # 手动触发
+  schedule:                 # 定时触发
+    - cron: "0 3 * * *"     # 每天 UTC 3点 (北京时间 11点)
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1️⃣ 检出你的仓库
+      - name: 📥 Checkout forked repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      # 2️⃣ 安装 Git
+      - name: 🧩 Install Git
+        run: sudo apt-get update && sudo apt-get install git -y
+
+      # 3️⃣ 添加上游远程并拉取
+      - name: 🔗 Add upstream and fetch
+        run: |
+          git remote add upstream https://github.com/flierfish/Voxy-1.20.1-RePort.git || echo "upstream exists"
+          git fetch upstream
+
+      # 4️⃣ 合并上游更新到 mc_1201-vs
+      - name: 🔄 Merge upstream changes
+        run: |
+          git checkout mc_1201-vs
+          git merge upstream/mc_1201-vs --no-edit || echo "No changes to merge"
+          git push origin mc_1201-vs || echo "No changes to push"
+
+      # 5️⃣ 检查是否有变化
+      - name: ⏩ Check for changes
+        id: changes
+        run: |
+          git fetch origin mc_1201-vs
+          git diff --quiet origin/mc_1201-vs || echo "changes=true" >> $GITHUB_OUTPUT
+
+      - name: 🛑 Skip if no changes
+        if: ${{ !steps.changes.outputs.changes }}
+        run: echo "No updates, skipping build" && exit 0
+
+      # 6️⃣ 设置 Java
+      - name: ☕ Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # 7️⃣ 授权 gradlew
+      - name: 🔧 Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # 8️⃣ 构建 Mod
+      - name: 🏗 Build Mod
+        run: ./gradlew build
+
+      # 9️⃣ 上传 Artifact（可选）
+      - name: 📦 Upload Mod Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Voxy-Mod-Build
+          path: build/libs/*.jar
+
+      # 🔟 自动 Release
+      - name: 🏷 Generate tag name
+        id: tag
+        run: echo "tag_name=build-$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
+
+      - name: 🚀 Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag_name }}
+          name: Auto Build ${{ steps.tag.outputs.tag_name }}
+          files: build/libs/*.jar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
