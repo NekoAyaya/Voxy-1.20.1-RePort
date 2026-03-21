@@ -104,6 +104,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         var builder = Shader.make()
                 .defineIf("TAA_PATCH", taa != null)
                 .defineIf("DEBUG_RENDER", false)
+                .defineIf("USE_NV_JANK", Capabilities.INSTANCE.isNvidia)
 
                 .defineIf("DARKENED_TINTING", Minecraft.getInstance().level.effects().constantAmbientLight())//TODO: FIXME: this is really jank atm
 

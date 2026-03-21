@@ -9,18 +9,37 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.loader.api.FabricLoader;
 // import net.minecraft.client.gui.components.debug.DebugScreenEntries;
+import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceLocation;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.channels.FileLock;
+import java.nio.channels.NonWritableChannelException;
 import java.util.HashSet;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
 public class VoxyClient implements ClientModInitializer {
     private static final HashSet<String> FREX = new HashSet<>();
+    private static FileLock EXCLUSIVE_LOCK;
 
     public static void initVoxyClient() {
         Capabilities.init();//Ensure clinit is called
 
         boolean systemSupported = Capabilities.INSTANCE.compute && Capabilities.INSTANCE.indirectParameters;
+        if (systemSupported && System.getProperty("voxy.exclusiveLock", "false").equalsIgnoreCase("true")) {
+            var voxyDir = Minecraft.getInstance().gameDirectory.toPath().resolve(".voxy");
+            if (!voxyDir.toFile().isDirectory()) {
+                voxyDir.toFile().mkdirs();
+            }
+            try {
+                FileOutputStream lockStream = new FileOutputStream(voxyDir.resolve("voxy.lock").toFile());
+                EXCLUSIVE_LOCK = lockStream.getChannel().lock(0, Long.MAX_VALUE, false);
+            } catch (NonWritableChannelException | IOException e) {
+                Logger.error("Failed to acquire exclusive voxy lock file, mod will be disabled", e);
+                systemSupported = false;
+            }
+        }
         if (systemSupported) {
 
             SharedIndexBuffer.INSTANCE.id();

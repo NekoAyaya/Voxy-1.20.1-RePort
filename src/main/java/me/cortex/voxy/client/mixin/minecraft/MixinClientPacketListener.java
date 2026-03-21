@@ -1,8 +1,6 @@
 package me.cortex.voxy.client.mixin.minecraft;
 
-import me.cortex.voxy.client.VoxyClientInstance;
-import me.cortex.voxy.client.config.VoxyConfig;
-import me.cortex.voxy.commonImpl.VoxyCommon;
+import me.cortex.voxy.client.ClientSessionEvents;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.network.protocol.game.ClientboundLoginPacket;
 import org.spongepowered.asm.mixin.Mixin;
@@ -12,16 +10,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(ClientPacketListener.class)
 public class MixinClientPacketListener {
-    @Inject(method = "handleLogin", at = @At("HEAD"))
+    @Inject(method = "handleLogin", at = @At("HEAD"), require = 0)
     private void voxy$init(ClientboundLoginPacket packet, CallbackInfo ci) {
-        if (VoxyCommon.isAvailable() && !VoxyClientInstance.isInGame) {
-            VoxyClientInstance.isInGame = true;
-            if (VoxyConfig.CONFIG.enabled) {
-                if (VoxyCommon.getInstance() != null) {
-                    VoxyCommon.shutdownInstance();
-                }
-                VoxyCommon.createInstance();
-            }
+        if (!ClientSessionEvents.inSession) {
+            ClientSessionEvents.sessionStart();
         }
     }
 }

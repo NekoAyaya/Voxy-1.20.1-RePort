@@ -2,6 +2,7 @@ package me.cortex.voxy.client;
 
 import me.cortex.voxy.client.compat.FlashbackCompat;
 import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.client.core.RenderResourceReuse;
 import me.cortex.voxy.client.mixin.sodium.AccessorSodiumWorldRenderer;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.config.ConfigBuildCtx;
@@ -22,8 +23,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 public class VoxyClientInstance extends VoxyInstance {
-    public static boolean isInGame = false;
-
     private final SectionStorageConfig storageConfig;
     private final Path basePath;
     private final boolean noIngestOverride;
@@ -65,6 +64,7 @@ public class VoxyClientInstance extends VoxyInstance {
         var ctx = new ConfigBuildCtx();
         ctx.setProperty(ConfigBuildCtx.BASE_SAVE_PATH, this.basePath.toString());
         ctx.setProperty(ConfigBuildCtx.WORLD_IDENTIFIER, identifier.getWorldId());
+        ctx.setProperty(ConfigBuildCtx.PLAYER_UUID, Minecraft.getInstance().getUser().getProfileId().toString().replace(':', '-'));
         ctx.pushPath(ConfigBuildCtx.DEFAULT_STORAGE_PATH);
         return this.storageConfig.build(ctx);
     }
@@ -113,11 +113,18 @@ public class VoxyClientInstance extends VoxyInstance {
 
     @Override
     public boolean isIngestEnabled(WorldIdentifier worldId) {
-        return !this.noIngestOverride;
+        return (!this.noIngestOverride) && VoxyConfig.CONFIG.ingestEnabled;
+    }
+
+    @Override
+    public void shutdown() {
+        super.shutdown();
+        RenderResourceReuse.clearResources();
     }
 
     private static class Config {
         public int version = 1;
+        public boolean disabled = false;
         public SectionStorageConfig sectionStorageConfig;
     }
     private static final Config DEFAULT_STORAGE_CONFIG;

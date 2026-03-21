@@ -457,6 +457,10 @@ public class VoxyRenderSystem {
             debug.add("Extra time: " + TimingStatistics.A.pVal() + ", " + TimingStatistics.B.pVal() + ", " + TimingStatistics.C.pVal() + ", " + TimingStatistics.D.pVal());
             debug.add("Extra 2 time: " + TimingStatistics.E.pVal() + ", " + TimingStatistics.F.pVal() + ", " + TimingStatistics.G.pVal() + ", " + TimingStatistics.H.pVal() + ", " + TimingStatistics.I.pVal());
         }
+        String gpuDebug = GPUTiming.INSTANCE.getDebug();
+        if (!gpuDebug.isEmpty()) {
+            debug.add(gpuDebug);
+        }
         PrintfDebugUtil.addToOut(debug);
     }
 

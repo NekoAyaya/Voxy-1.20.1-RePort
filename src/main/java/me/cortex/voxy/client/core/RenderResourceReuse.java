@@ -96,6 +96,9 @@ public class RenderResourceReuse {
         if (Capabilities.INSTANCE.isIntel) {
             geometryCapacity = Math.max(geometryCapacity, 1L << 30);
         }
+        if (Capabilities.INSTANCE.isNvidia && ThreadUtils.isLinux) {
+            geometryCapacity = Math.min(geometryCapacity, 2000L * 1024L * 1024L);
+        }
 
         geometryCapacity = Math.max(512 * 1024 * 1024, geometryCapacity);
 

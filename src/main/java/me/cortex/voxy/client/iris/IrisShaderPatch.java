@@ -23,6 +23,7 @@ import static org.lwjgl.opengl.GL33.*;
 
 public class IrisShaderPatch {
     public static final int VERSION = ((IntSupplier)()->1).getAsInt();
+    public static final int SHADER_DEFINE_VERSION = 2;
 
     public static final boolean IMPERSONATE_DISTANT_HORIZONS = System.getProperty("voxy.impersonateDHShader", "false").equalsIgnoreCase("true");
 
@@ -177,6 +178,7 @@ public class IrisShaderPatch {
         public boolean excludeLodsFromVanillaDepth;
         public float[] renderScale;
         public boolean useViewportDims;
+        public boolean skipShaderDepthHackFix;
         public String checkValid() {
             if (this.blending != null) {
                 int i = 0;
@@ -227,6 +229,10 @@ public class IrisShaderPatch {
         return this.patchData.useViewportDims;
     }
 
+    public boolean skipShaderDepthHackFix() {
+        return this.patchData.skipShaderDepthHackFix;
+    }
+
     public Int2ObjectMap<String> getSSBOs() {
         return new Int2ObjectLinkedOpenHashMap<>(this.ssbos);
     }
@@ -267,6 +273,10 @@ public class IrisShaderPatch {
             return new float[]{this.patchData.renderScale[0],this.patchData.renderScale[0]};
         }
         return new float[]{Math.max(0.01f,this.patchData.renderScale[0]),Math.max(0.01f,this.patchData.renderScale[1])};
+    }
+
+    public boolean deferedTranslucentRendering() {
+        return false;
     }
 
     public Runnable createBlendSetup() {

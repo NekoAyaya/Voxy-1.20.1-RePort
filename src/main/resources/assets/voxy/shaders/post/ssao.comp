@@ -20,7 +20,7 @@ vec4 reDeProject(vec3 pos) {
     //TODO: sample the colour texture and check if the alpha has the hasAO flag
 
     float depth = texture(depthTex, UV).x;
-    if (depth == 1.0f) {
+    if (depth >= 0.999999f || depth == 0.0f) {
         return vec4(-1.0f);
     }
     uint meta = uint(255.0f*texture(colourTex, UV).w);

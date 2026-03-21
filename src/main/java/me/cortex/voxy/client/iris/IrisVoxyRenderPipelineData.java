@@ -7,6 +7,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectFunction;
 import kroppeb.stareval.function.FunctionReturn;
 import kroppeb.stareval.function.Type;
 import me.cortex.voxy.client.core.IrisVoxyRenderPipeline;
+import me.cortex.voxy.client.core.rendering.util.LightMapHelper;
 import me.cortex.voxy.client.mixin.iris.CustomUniformsAccessor;
 import me.cortex.voxy.client.mixin.iris.IrisRenderingPipelineAccessor;
 import me.cortex.voxy.common.Logger;
@@ -51,9 +52,10 @@ public class IrisVoxyRenderPipelineData {
     public final float[] resolutionScale;
     public final String TAA;
     public final boolean useViewportDims;
+    public final boolean deferTranslucency;
+    public boolean skipShaderDepthHackFix;
 
-    private IrisVoxyRenderPipelineData(IrisShaderPatch patch, int[] opaqueDrawTargets, int[] translucentDrawTargets,
-            StructLayout uniformSet, Runnable blendingSetup, ImageSet imageSet, SSBOSet ssboSet) {
+    private IrisVoxyRenderPipelineData(IrisShaderPatch patch, int[] opaqueDrawTargets, int[] translucentDrawTargets, StructLayout uniformSet, Runnable blendingSetup, ImageSet imageSet, SSBOSet ssboSet) {
         this.opaqueDrawTargets = opaqueDrawTargets;
         this.translucentDrawTargets = translucentDrawTargets;
         this.opaquePatch = patch.getPatchOpaqueSource();
@@ -66,6 +68,8 @@ public class IrisVoxyRenderPipelineData {
         this.TAA = patch.getTAAShift();
         this.resolutionScale = patch.getRenderScale();
         this.useViewportDims = patch.useViewportDims();
+        this.deferTranslucency = patch.deferedTranslucentRendering();
+        this.skipShaderDepthHackFix = patch.skipShaderDepthHackFix();
     }
 
     public SSBOSet getSsboSet() {
@@ -79,47 +83,44 @@ public class IrisVoxyRenderPipelineData {
     public StructLayout getUniforms() {
         return this.uniforms;
     }
-
     public Runnable getBlender() {
         return this.blendingSetup;
     }
-
     public String opaqueFragPatch() {
         return this.opaquePatch;
     }
-
     public String translucentFragPatch() {
         return this.translucentPatch;
     }
 
-    public static IrisVoxyRenderPipelineData buildPipeline(IrisRenderingPipeline ipipe, IrisShaderPatch patch,
-            CustomUniforms cu, ShaderStorageBufferHolder ssboHolder) {
+
+    public static IrisVoxyRenderPipelineData buildPipeline(IrisRenderingPipeline ipipe, IrisShaderPatch patch, CustomUniforms cu, ShaderStorageBufferHolder ssboHolder) {
         var uniforms = createUniformLayoutStructAndUpdater(createUniformSet(cu, patch));
+
 
         var imageSet = createImageSet(ipipe, patch);
 
         var ssboSet = createSSBOLayouts(patch.getSSBOs(), ssboHolder);
 
-        var opaqueDrawTargets = getDrawBuffers(patch.getOpqaueTargets(), ipipe.getFlippedAfterPrepare(),
-                ((IrisRenderingPipelineAccessor) ipipe).getRenderTargets());
-        var translucentDrawTargets = getDrawBuffers(patch.getTranslucentTargets(), ipipe.getFlippedAfterPrepare(),
-                ((IrisRenderingPipelineAccessor) ipipe).getRenderTargets());
+        var opaqueDrawTargets = getDrawBuffers(patch.getOpqaueTargets(), ipipe.getFlippedAfterPrepare(), ((IrisRenderingPipelineAccessor)ipipe).getRenderTargets());
+        var translucentDrawTargets = getDrawBuffers(patch.getTranslucentTargets(), ipipe.getFlippedAfterPrepare(), ((IrisRenderingPipelineAccessor)ipipe).getRenderTargets());
 
-        // TODO: need to transform the string patch with the uniform decleration aswell
-        // as sampler declerations
-        return new IrisVoxyRenderPipelineData(patch, opaqueDrawTargets, translucentDrawTargets, uniforms,
-                patch.createBlendSetup(), imageSet, ssboSet);
+
+
+        //TODO: need to transform the string patch with the uniform decleration aswell as sampler declerations
+        return new IrisVoxyRenderPipelineData(patch, opaqueDrawTargets, translucentDrawTargets, uniforms, patch.createBlendSetup(), imageSet, ssboSet);
     }
 
     private static int[] getDrawBuffers(int[] targets, ImmutableSet<Integer> stageWritesToAlt, RenderTargets rt) {
         int[] targetTextures = new int[targets.length];
-        for (int i = 0; i < targets.length; i++) {
+        for(int i = 0; i < targets.length; i++) {
             RenderTarget target = rt.getOrCreate(targets[i]);
             int textureId = stageWritesToAlt.contains(targets[i]) ? target.getAltTexture() : target.getMainTexture();
             targetTextures[i] = textureId;
         }
         return targetTextures;
     }
+
 
     private static String convertToGlslType(UniformType type) {
         return switch (type) {
@@ -136,78 +137,70 @@ public class IrisVoxyRenderPipelineData {
         };
     }
 
-    public record StructLayout(int size, String layout, LongConsumer updater) {
+    public boolean shouldDeferTranslucency() {
+        return false;
     }
 
+    public record StructLayout(int size, String layout, LongConsumer updater) {}
     private static StructLayout createUniformLayoutStructAndUpdater(List<UniformWritingHolder> uniforms) {
         if (uniforms.size() == 0) {
             return null;
         }
 
-        List<UniformWritingHolder>[] ordering = new List[] { new ArrayList<>(), new ArrayList<>(), new ArrayList<>(),
-                new ArrayList<>() };
+        List<UniformWritingHolder>[] ordering = new List[]{new ArrayList<>(), new ArrayList<>(), new ArrayList<>(), new ArrayList<>()};
 
-        // Creates an optimial struct layout for the uniforms
+        //Creates an optimial struct layout for the uniforms
         for (var uniform : uniforms) {
             int order = getUniformOrdering(uniform.type);
             ordering[order].add(uniform);
         }
 
-        // Emit the ordering, note this is not optimial, but good enough, e.g. if have
-        // even number of align 2, emit that after align 4
+        //Emit the ordering, note this is not optimial, but good enough, e.g. if have even number of align 2, emit that after align 4
         int pos = 0;
         Int2ObjectLinkedOpenHashMap<UniformWritingHolder> layout = new Int2ObjectLinkedOpenHashMap<>();
-        for (var uniform : ordering[0]) {// Emit exact align 4
-            layout.put(pos, uniform);
-            pos += getSizeAndAlignment(uniform.type) >> 5;
+        for (var uniform : ordering[0]) {//Emit exact align 4
+            layout.put(pos, uniform); pos += getSizeAndAlignment(uniform.type)>>5;
         }
-        if (!ordering[1].isEmpty() && (ordering[1].size() & 1) == 0) {
-            // Emit all the align 2 as there is an even number of them
+        if (!ordering[1].isEmpty() && (ordering[1].size()&1)==0) {
+            //Emit all the align 2 as there is an even number of them
             for (var uniform : ordering[1]) {
-                layout.put(pos, uniform);
-                pos += getSizeAndAlignment(uniform.type) >> 5;
+                layout.put(pos, uniform); pos += getSizeAndAlignment(uniform.type)>>5;
             }
             ordering[1].clear();
         }
-        // Emit align 3
-        for (var uniform : ordering[2]) {// Emit size odd, alignment must be 4
-            layout.put(pos, uniform);
-            pos += getSizeAndAlignment(uniform.type) >> 5;
-            // We must get a size 1 to pad to align 4
-            if (!ordering[3].isEmpty()) {// Size 1
+        //Emit align 3
+        for (var uniform : ordering[2]) {//Emit size odd, alignment must be 4
+            layout.put(pos, uniform); pos += getSizeAndAlignment(uniform.type)>>5;
+            //We must get a size 1 to pad to align 4
+            if (!ordering[3].isEmpty()) {//Size 1
                 uniform = ordering[3].removeFirst();
-                layout.put(pos, uniform);
-                pos += getSizeAndAlignment(uniform.type) >> 5;
-            } else {// Padding must be injected
+                layout.put(pos, uniform); pos += getSizeAndAlignment(uniform.type)>>5;
+            } else {//Padding must be injected
                 pos += 1;
             }
         }
 
-        // Emit align 2
+        //Emit align 2
         for (var uniform : ordering[1]) {
-            layout.put(pos, uniform);
-            pos += getSizeAndAlignment(uniform.type) >> 5;
+            layout.put(pos, uniform); pos += getSizeAndAlignment(uniform.type)>>5;
         }
 
-        // Emit align 1
+        //Emit align 1
         for (var uniform : ordering[3]) {
-            layout.put(pos, uniform);
-            pos += getSizeAndAlignment(uniform.type) >> 5;
+            layout.put(pos, uniform); pos += getSizeAndAlignment(uniform.type)>>5;
         }
 
-        if (layout.size() != uniforms.size()) {
+        if (layout.size()!=uniforms.size()) {
             throw new IllegalStateException();
         }
 
-        // We have our ordering and aligned offsets, generate an updater aswell as the
-        // layout
+        //We have our ordering and aligned offsets, generate an updater aswell as the layout
 
         String structLayout;
         {
             StringBuilder struct = new StringBuilder("{\n");
             for (var pair : layout.int2ObjectEntrySet()) {
-                struct.append("\t").append(convertToGlslType(pair.getValue().type)).append(" ")
-                        .append(pair.getValue().name).append(";\n");
+                struct.append("\t").append(convertToGlslType(pair.getValue().type)).append(" ").append(pair.getValue().name).append(";\n");
             }
             struct.append("}");
             structLayout = struct.toString();
@@ -218,93 +211,83 @@ public class IrisVoxyRenderPipelineData {
             LongConsumer[] updaters = new LongConsumer[uniforms.size()];
             int i = 0;
             for (var pair : layout.int2ObjectEntrySet()) {
-                updaters[i++] = pair.getValue().writingFactory.get(pair.getIntKey() * 4L);
+                updaters[i++] = pair.getValue().writingFactory.get(pair.getIntKey()*4L);
             }
 
             updater = ptr -> {
                 for (var u : updaters) {
                     u.accept(ptr);
                 }
-            };// Writes all the uniforms to the locations
+            };//Writes all the uniforms to the locations
         }
-        return new StructLayout(pos * 4, structLayout, updater);// *4 since each slot is 4 bytes
+        return new StructLayout(pos*4, structLayout, updater);//*4 since each slot is 4 bytes
     }
 
     private static LongConsumer createWriter(long offset, FunctionReturn ret, CachedUniform uniform) {
         if (uniform instanceof BooleanCachedUniform bcu) {
-            return ptr -> {
-                ptr += offset;
+            return ptr->{ptr += offset;
                 bcu.writeTo(ret);
-                MemoryUtil.memPutInt(ptr, ret.booleanReturn ? 1 : 0);
+                MemoryUtil.memPutInt(ptr, ret.booleanReturn?1:0);
             };
         } else if (uniform instanceof FloatCachedUniform fcu) {
-            return ptr -> {
-                ptr += offset;
+            return ptr->{ptr += offset;
                 fcu.writeTo(ret);
                 MemoryUtil.memPutFloat(ptr, ret.floatReturn);
             };
         } else if (uniform instanceof IntCachedUniform icu) {
-            return ptr -> {
-                ptr += offset;
+            return ptr->{ptr += offset;
                 icu.writeTo(ret);
                 MemoryUtil.memPutInt(ptr, ret.intReturn);
             };
         } else if (uniform instanceof Float2VectorCachedUniform v2fcu) {
-            return ptr -> {
-                ptr += offset;
+            return ptr->{ptr += offset;
                 v2fcu.writeTo(ret);
-                ((Vector2f) ret.objectReturn).getToAddress(ptr);
+                ((Vector2f)ret.objectReturn).getToAddress(ptr);
             };
         } else if (uniform instanceof Float3VectorCachedUniform v3fcu) {
-            return ptr -> {
-                ptr += offset;
+            return ptr->{ptr += offset;
                 v3fcu.writeTo(ret);
-                ((Vector3f) ret.objectReturn).getToAddress(ptr);
+                ((Vector3f)ret.objectReturn).getToAddress(ptr);
             };
         } else if (uniform instanceof Float4VectorCachedUniform v4fcu) {
-            return ptr -> {
-                ptr += offset;
+            return ptr->{ptr += offset;
                 v4fcu.writeTo(ret);
-                ((Vector4f) ret.objectReturn).getToAddress(ptr);
+                ((Vector4f)ret.objectReturn).getToAddress(ptr);
             };
         } else if (uniform instanceof Int2VectorCachedUniform v2icu) {
-            return ptr -> {
-                ptr += offset;
+            return ptr->{ptr += offset;
                 v2icu.writeTo(ret);
-                ((Vector2i) ret.objectReturn).getToAddress(ptr);
+                ((Vector2i)ret.objectReturn).getToAddress(ptr);
             };
         } else if (uniform instanceof Int3VectorCachedUniform v3icu) {
-            return ptr -> {
-                ptr += offset;
+            return ptr->{ptr += offset;
                 v3icu.writeTo(ret);
-                ((Vector3i) ret.objectReturn).getToAddress(ptr);
+                ((Vector3i)ret.objectReturn).getToAddress(ptr);
             };
         } else if (uniform instanceof Float4MatrixCachedUniform f4mcu) {
-            return ptr -> {
-                ptr += offset;
+            return ptr->{ptr += offset;
                 f4mcu.writeTo(ret);
-                ((Matrix4f) ret.objectReturn).getToAddress(ptr);
+                ((Matrix4f)ret.objectReturn).getToAddress(ptr);
             };
         } else {
             throw new IllegalStateException("Unknown uniform type " + uniform.getClass().getName());
         }
     }
 
-    private static int P(int size, int align) {
-        return size << 5 | align;
-    }
 
+    private static int P(int size, int align) {
+        return size<<5|align;
+    }
     private static int getSizeAndAlignment(UniformType type) {
         return switch (type) {
-            case INT, FLOAT -> P(1, 1);// Size, Alignment
-            case MAT3 -> P(4 + 4 + 3, 4);// is funky as each row is a vec3 padded to a vec4
-            case MAT4 -> P(4 * 4, 4);
-            case VEC2, VEC2I -> P(2, 2);
-            case VEC3, VEC3I -> P(3, 4);
-            case VEC4, VEC4I -> P(4, 4);
+            case INT, FLOAT -> P(1,1);//Size, Alignment
+            case MAT3 -> P(4+4+3,4);//is funky as each row is a vec3 padded to a vec4
+            case MAT4 -> P(4*4,4);
+            case VEC2, VEC2I -> P(2,2);
+            case VEC3, VEC3I -> P(3,4);
+            case VEC4, VEC4I -> P(4,4);
         };
     }
-
     private static int getUniformOrdering(UniformType type) {
         return switch (type) {
             case MAT4, VEC4, VEC4I -> 0;
@@ -314,72 +297,63 @@ public class IrisVoxyRenderPipelineData {
         };
     }
 
-    private record UniformWritingHolder(String name, UniformType type,
-            Long2ObjectFunction<LongConsumer> writingFactory) {
+    private record UniformWritingHolder(String name, UniformType type, Long2ObjectFunction<LongConsumer> writingFactory) {
 
     }
-
-    // Type.convert() 已弃用，但 stareval 库尚未提供替代方法
-    @SuppressWarnings("deprecation")
     private static List<UniformWritingHolder> createUniformSet(CustomUniforms cu, IrisShaderPatch patch) {
-        // This is a fking awful hack... but it works thinks
+        //This is a fking awful hack... but it works thinks
 
         List<UniformWritingHolder> uniforms = new ArrayList<>();
         Set<String> seenUniforms = new HashSet<>();
         DynamicLocationalUniformHolder uniformBuilder = new DynamicLocationalUniformHolder() {
             @Override
-            public DynamicLocationalUniformHolder uniform1i(UniformUpdateFrequency updateFrequency, String name,
-                    IntSupplier value) {
+            public DynamicLocationalUniformHolder uniform1i(UniformUpdateFrequency updateFrequency, String name, IntSupplier value) {
                 return this.uniform1i(name, value, null);
             }
 
             @Override
-            public DynamicLocationalUniformHolder uniform1i(String name, IntSupplier value,
-                    ValueUpdateNotifier notifier) {
-                this.injectDynamicUniformType(name, UniformType.INT, offset -> {
-                    return ptr -> {
-                        MemoryUtil.memPutInt(ptr + offset, value.getAsInt());
+            public DynamicLocationalUniformHolder uniform1i(String name, IntSupplier value, ValueUpdateNotifier notifier) {
+                this.injectDynamicUniformType(name, UniformType.INT, offset->{
+                    return ptr->{
+                        MemoryUtil.memPutInt(ptr+offset, value.getAsInt());
                     };
                 });
                 return this;
             }
 
+
             @Override
-            public DynamicLocationalUniformHolder uniform1f(UniformUpdateFrequency updateFrequency, String name,
-                    FloatSupplier value) {
+            public DynamicLocationalUniformHolder uniform1f(UniformUpdateFrequency updateFrequency, String name, FloatSupplier value) {
                 return this.uniform1f(name, value, null);
             }
 
             @Override
-            public DynamicLocationalUniformHolder uniform1f(String name, FloatSupplier value,
-                    ValueUpdateNotifier notifier) {
-                this.injectDynamicUniformType(name, UniformType.FLOAT, offset -> {
-                    return ptr -> {
-                        MemoryUtil.memPutFloat(ptr + offset, value.getAsFloat());
+            public DynamicLocationalUniformHolder uniform1f(String name, FloatSupplier value, ValueUpdateNotifier notifier) {
+                this.injectDynamicUniformType(name, UniformType.FLOAT, offset->{
+                    return ptr->{
+                        MemoryUtil.memPutFloat(ptr+offset, value.getAsFloat());
                     };
                 });
                 return this;
             }
 
+
             @Override
-            public DynamicLocationalUniformHolder uniform3f(UniformUpdateFrequency updateFrequency, String name,
-                    Supplier<Vector3f> value) {
+            public DynamicLocationalUniformHolder uniform3f(UniformUpdateFrequency updateFrequency, String name, Supplier<Vector3f> value) {
                 return this.uniform3f(name, value, null);
             }
 
             @Override
-            public DynamicLocationalUniformHolder uniform3f(String name, Supplier<Vector3f> value,
-                    ValueUpdateNotifier notifier) {
-                this.injectDynamicUniformType(name, UniformType.VEC3, offset -> {
-                    return ptr -> {
-                        value.get().getToAddress(ptr + offset);
+            public DynamicLocationalUniformHolder uniform3f(String name, Supplier<Vector3f> value, ValueUpdateNotifier notifier) {
+                this.injectDynamicUniformType(name, UniformType.VEC3, offset->{
+                    return ptr->{
+                      value.get().getToAddress(ptr+offset);
                     };
                 });
                 return this;
             }
 
-            private void injectDynamicUniformType(String name, UniformType type,
-                    Long2ObjectFunction<LongConsumer> supplier) {
+            private void injectDynamicUniformType(String name, UniformType type, Long2ObjectFunction<LongConsumer> supplier) {
                 var names = patch.getUniformList();
                 for (int i = 0; i < names.length; i++) {
                     if (names[i].equals(name)) {
@@ -393,25 +367,34 @@ public class IrisVoxyRenderPipelineData {
             }
 
             @Override
-            public DynamicLocationalUniformHolder addDynamicUniform(Uniform uniform,
-                    ValueUpdateNotifier valueUpdateNotifier) {
+            public DynamicLocationalUniformHolder addDynamicUniform(Uniform uniform, ValueUpdateNotifier valueUpdateNotifier) {
                 throw new IllegalStateException("Type not implemented for uniform: " + uniform);
-                // return this;
+                //return this;
             }
+            //TODO: override the uniform1b call to specialcase booleans
 
             @Override
             public LocationalUniformHolder addUniform(UniformUpdateFrequency uniformUpdateFrequency, Uniform uniform) {
+                //TODO: error/log the type of uniform that was added (and its location)
+
+                if (uniform instanceof BooleanUniform bu) {
+                    //TODO: need to assert the loc is from a actually valid location
+                    int loc = bu.getLocation();
+                    var ul = patch.getUniformList();
+                    if (loc<ul.length) {
+                        var uniformName = ul[loc];
+                    }
+                }
                 return this;
             }
 
             @Override
             public OptionalInt location(String uniformName, UniformType uniformType) {
-                // Yes am aware how performant inefficent this is... just dont care tbh since is
-                // on setup and is small
+                //Yes am aware how performant inefficent this is... just dont care tbh since is on setup and is small
                 var names = patch.getUniformList();
                 for (int i = 0; i < names.length; i++) {
                     if (names[i].equals(uniformName)) {
-                        return OptionalInt.of(i);// Have a base uniform offset of 10
+                        return OptionalInt.of(i);//Have a base uniform offset of 10
                     }
                 }
                 return OptionalInt.empty();
@@ -423,23 +406,15 @@ public class IrisVoxyRenderPipelineData {
             }
         };
         CommonUniforms.addDynamicUniforms(uniformBuilder, FogMode.PER_FRAGMENT);
-        if (Arrays.asList(patch.getUniformList()).contains("isPaleGarden") && !seenUniforms.contains("isPaleGarden")) {
-            uniformBuilder.uniform1i("isPaleGarden", () -> 0, null);
-        }
-        if (Arrays.asList(patch.getUniformList()).contains("endFlashIntensity")
-                && !seenUniforms.contains("endFlashIntensity")) {
-            uniformBuilder.uniform1f("endFlashIntensity", () -> 0.0f, null);
-        }
         cu.assignTo(uniformBuilder);
         cu.mapholderToPass(uniformBuilder, patch);
 
         FunctionReturn cachedReturn = new FunctionReturn();
-        ((CustomUniformsAccessor) cu).getLocationMap().get(patch).object2IntEntrySet().forEach(entry -> {
+        ((CustomUniformsAccessor)cu).getLocationMap().get(patch).object2IntEntrySet().forEach(entry-> {
             if (!seenUniforms.add(entry.getKey().getName())) {
                 throw new IllegalArgumentException("Already added uniform: " + entry.getKey().getName());
             }
-            uniforms.add(new UniformWritingHolder(entry.getKey().getName(), Type.convert(entry.getKey().getType()),
-                    offset -> createWriter(offset, cachedReturn, entry.getKey())));
+            uniforms.add(new UniformWritingHolder(entry.getKey().getName(), Type.convert(entry.getKey().getType()),offset->createWriter(offset, cachedReturn, entry.getKey())));
         });
 
         if (uniforms.size() != patch.getUniformList().length) {
@@ -447,29 +422,28 @@ public class IrisVoxyRenderPipelineData {
             for (var uniform : uniforms) {
                 uniformsUnseen.remove(uniform.name);
             }
-            Logger.error("The following uniforms could not be found: ["
-                    + uniformsUnseen.stream().sorted(String::compareToIgnoreCase).collect(Collectors.joining(","))
-                    + "]");
+            Logger.error("The following uniforms could not be found: [" + uniformsUnseen.stream().sorted(String::compareToIgnoreCase).collect(Collectors.joining(","))+"]");
         }
-        // In _theory_ this should work?
+        //In _theory_ this should work?
         return uniforms;
     }
 
-    private record TextureWSampler(String name, IntSupplier texture, int sampler) {
-    }
-
+    private record TextureWSampler(String name, IntSupplier texture, IntSupplier sampler) { }
     public record ImageSet(String layout, IntConsumer bindingFunction) {
 
     }
-
     private static ImageSet createImageSet(IrisRenderingPipeline ipipe, IrisShaderPatch patch) {
         var samplerDataSet = patch.getSamplerSet();
-        if (samplerDataSet == null)
-            return null;
+        if (samplerDataSet == null) return null;
         Set<String> samplerNameSet = new LinkedHashSet<>(samplerDataSet.keySet());
-        if (samplerNameSet.isEmpty())
-            return null;
+        if (samplerNameSet.isEmpty()) return null;
         Set<TextureWSampler> samplerSet = new LinkedHashSet<>();
+
+        //Built up the external samplers list
+        Map<String, IntSupplier> externalTextures = new HashMap<>();
+        externalTextures.put("lightmap", LightMapHelper::getLightmapTextureId);
+
+
         SamplerHolder samplerBuilder = new SamplerHolder() {
             @Override
             public boolean hasSampler(String s) {
@@ -478,51 +452,50 @@ public class IrisVoxyRenderPipelineData {
 
             public boolean hasSampler(String... names) {
                 for (var name : names) {
-                    if (samplerNameSet.contains(name))
-                        return true;
+                    if (samplerNameSet.contains(name)) return true;
                 }
                 return false;
             }
 
             private String name(String... names) {
                 for (var name : names) {
-                    if (samplerNameSet.contains(name))
-                        return name;
+                    if (samplerNameSet.contains(name)) return name;
                 }
                 return null;
             }
 
             @Override
-            public boolean addDefaultSampler(TextureType type, IntSupplier texture, ValueUpdateNotifier notifier,
-                    GlSampler sampler, String... names) {
+            public boolean addDefaultSampler(TextureType type, IntSupplier texture, ValueUpdateNotifier notifier, GlSampler sampler, String... names) {
                 Logger.error("Unsupported default sampler");
                 return false;
             }
 
             @Override
-            public boolean addDynamicSampler(TextureType type, IntSupplier texture, GlSampler sampler,
-                    String... names) {
+            public boolean addDynamicSampler(TextureType type, IntSupplier texture, GlSampler sampler, String... names) {
                 return this.addDynamicSampler(type, texture, null, sampler, names);
             }
 
             @Override
-            public boolean addDynamicSampler(TextureType type, IntSupplier texture, ValueUpdateNotifier notifier,
-                    GlSampler sampler, String... names) {
-                if (!this.hasSampler(names))
-                    return false;
-                samplerSet.add(new TextureWSampler(this.name(names), texture, sampler != null ? sampler.getId() : -1));
+            public boolean addDynamicSampler(TextureType type, IntSupplier texture, ValueUpdateNotifier notifier, GlSampler sampler, String... names) {
+                if (!this.hasSampler(names)) return false;
+                samplerSet.add(new TextureWSampler(this.name(names), texture, sampler != null ? sampler::getId : () -> -1));
                 return true;
             }
 
             @Override
             public void addExternalSampler(int texture, String... names) {
-                if (!this.hasSampler(names))
-                    return;
-                samplerSet.add(new TextureWSampler(this.name(names), () -> texture, -1));
+                if (!this.hasSampler(names)) return;
+                var name = this.name(names);
+                var ex = externalTextures.get(name);
+                if (ex != null) {
+                    samplerSet.add(new TextureWSampler(name, ex, () -> 0));//unbind any sampler and use the externalTextureSupplier
+                } else {
+                    samplerSet.add(new TextureWSampler(name, () -> texture, () -> -1));
+                }
             }
         };
 
-        // Unsupported
+        //Unsupported
         ImageHolder imageBuilder = new ImageHolder() {
             @Override
             public boolean hasImage(String s) {
@@ -530,74 +503,53 @@ public class IrisVoxyRenderPipelineData {
             }
 
             @Override
-            public void addTextureImage(IntSupplier intSupplier, InternalTextureFormat internalTextureFormat,
-                    String s) {
+            public void addTextureImage(IntSupplier intSupplier, InternalTextureFormat internalTextureFormat, String s) {
 
             }
         };
 
-        ipipe.addGbufferOrShadowSamplers(samplerBuilder, imageBuilder, ipipe::getFlippedAfterPrepare, false, true, true,
-                false);
+        ipipe.addGbufferOrShadowSamplers(samplerBuilder, imageBuilder, ipipe::getFlippedAfterPrepare, false, true, true, false);
 
-        // samplerSet contains our samplers
+        //samplerSet contains our samplers
         if (samplerSet.size() != samplerNameSet.size()) {
-            Logger.error("Did not find all requested samplers. Found ["
-                    + samplerSet.stream().map(a -> a.name).collect(Collectors.joining()) + "] expected "
-                    + samplerNameSet);
+            Logger.error("Did not find all requested samplers. Found [" + samplerSet.stream().map(a->a.name).collect(Collectors.joining(", ")) + "] expected " + samplerNameSet);
         }
 
-        // TODO: generate a layout (defines) for all the samplers with the correct types
+        //TODO: generate a layout (defines) for all the samplers with the correct types
 
         StringBuilder builder = new StringBuilder();
         TextureWSampler[] samplers = new TextureWSampler[samplerSet.size()];
         int i = 0;
         for (var entry : samplerSet) {
-            samplers[i] = entry;
+            samplers[i]=entry;
 
             String samplerType = samplerDataSet.get(entry.name);
-            builder.append("layout(binding=(BASE_SAMPLER_BINDING_INDEX+").append(i).append(")) uniform ")
-                    .append(samplerType).append(" ").append(entry.name).append(";\n");
+            builder.append("layout(binding=(BASE_SAMPLER_BINDING_INDEX+").append(i).append(")) uniform ").append(samplerType).append(" ").append(entry.name).append(";\n");
             i++;
         }
 
-        IntConsumer bindingFunction = base -> {
+
+        IntConsumer bindingFunction = base->{
             for (int j = 0; j < samplers.length; j++) {
-                int unit = j + base;
+                int unit = j+base;
                 var ts = samplers[j];
-                int tex = 0;
-                try {
-                    tex = ts.texture.getAsInt();
-                } catch (RuntimeException e) {
-                    tex = 0;
-                }
-                if (tex == 0 || !org.lwjgl.opengl.GL11.glIsTexture(tex)) {
-                    glBindTextureUnit(unit, 0);
-                    glBindSampler(unit, 0);
-                    continue;
-                }
-                glBindTextureUnit(unit, tex);
-                if (ts.sampler != -1) {
-                    glBindSampler(unit, ts.sampler);
-                }
+                glBindTextureUnit(unit, ts.texture.getAsInt());
+                int sampler = ts.sampler.getAsInt();
+                if (sampler != -1) {
+                    glBindSampler(unit, sampler);
+                }//TODO: might need to bind sampler 0
             }
         };
         return new ImageSet(builder.toString(), bindingFunction);
     }
 
-    public record SSBOSet(String layout, IntConsumer bindingFunction) {
-    }
-
-    private record SSBOBinding(int irisIndex, int bindingOffset) {
-    }
-
+    public record SSBOSet(String layout, IntConsumer bindingFunction){}
+    private record SSBOBinding(int irisIndex, int bindingOffset) {}
     private static SSBOSet createSSBOLayouts(Int2ObjectMap<String> ssbos, ShaderStorageBufferHolder ssboStore) {
-        if (ssboStore == null)
-            return null;// If there is no store, there cannot be any ssbos
-        if (ssbos.isEmpty())
-            return null;
+        if (ssboStore == null) return null;//If there is no store, there cannot be any ssbos
+        if (ssbos.isEmpty()) return null;
         String header = "";
-        if (ssbos.containsKey(-1))
-            header = ssbos.remove(-1);
+        if (ssbos.containsKey(-1)) header = ssbos.remove(-1);
         StringBuilder builder = new StringBuilder(header);
         builder.append("\n");
         SSBOBinding[] bindings = new SSBOBinding[ssbos.size()];
@@ -605,16 +557,14 @@ public class IrisVoxyRenderPipelineData {
         for (var entry : ssbos.int2ObjectEntrySet()) {
             var val = entry.getValue();
             bindings[i] = new SSBOBinding(entry.getIntKey(), i);
-            builder.append("layout(binding = (BUFFER_BINDING_INDEX_BASE+").append(i)
-                    .append(")) restrict buffer IrisBufferBinding").append(i);
+            builder.append("layout(binding = (BUFFER_BINDING_INDEX_BASE+").append(i).append(")) restrict buffer IrisBufferBinding").append(i);
             builder.append(" ").append(val).append(";\n");
             i++;
         }
-        // ssboStore.getBufferIndex()
-        IntConsumer bindingFunction = base -> {
+        //ssboStore.getBufferIndex()
+        IntConsumer bindingFunction = base->{
             for (var binding : bindings) {
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, base + binding.bindingOffset,
-                        ssboStore.getBufferIndex(binding.irisIndex));
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, base+binding.bindingOffset, ssboStore.getBufferIndex(binding.irisIndex));
             }
         };
         return new SSBOSet(builder.toString(), bindingFunction);

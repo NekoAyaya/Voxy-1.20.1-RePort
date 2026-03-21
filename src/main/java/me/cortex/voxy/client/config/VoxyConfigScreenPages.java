@@ -1,16 +1,13 @@
 package me.cortex.voxy.client.config;
 
 import com.google.common.collect.ImmutableList;
-import me.cortex.voxy.client.RenderStatistics;
-import me.cortex.voxy.client.VoxyClientInstance;
+import me.cortex.voxy.client.ClientSessionEvents;
 import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
-import me.cortex.voxy.client.mixin.sodium.AccessorSodiumWorldRenderer;
 import me.cortex.voxy.common.util.cpu.CpuLayout;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.jellysquid.mods.sodium.client.gui.options.*;
 import me.jellysquid.mods.sodium.client.gui.options.control.SliderControl;
 import me.jellysquid.mods.sodium.client.gui.options.control.TickBoxControl;
-import me.jellysquid.mods.sodium.client.render.SodiumWorldRenderer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 
@@ -35,7 +32,7 @@ public abstract class VoxyConfigScreenPages {
                         .setBinding((s, v)->{
                             s.enabled = v;
                             if (v) {
-                                if (VoxyClientInstance.isInGame) {
+                                if (ClientSessionEvents.inSession) {
                                     VoxyCommon.createInstance();
                                     var vrsh = (IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer;
                                     if (vrsh != null && s.enableRendering) {
@@ -148,13 +145,6 @@ public abstract class VoxyConfigScreenPages {
                         .setTooltip(Component.translatable("voxy.config.general.environmental_fog.tooltip"))
                         .setControl(TickBoxControl::new)
                         .setBinding((s, v)-> s.environmentalFog = v, s -> s.environmentalFog)
-                        .build()
-                ).add(OptionImpl.createBuilder(boolean.class, storage)
-                        .setName(Component.translatable("voxy.config.general.render_statistics"))
-                        .setTooltip(Component.translatable("voxy.config.general.render_statistics.tooltip"))
-                        .setControl(TickBoxControl::new)
-                        .setBinding((s, v)-> RenderStatistics.enabled = v, s -> RenderStatistics.enabled)
-                        .setFlags(OptionFlag.REQUIRES_RENDERER_RELOAD)
                         .build()
                 ).add(OptionImpl.createBuilder(int.class, storage)
                         .setName(Component.translatable("voxy.config.general.maxVramUsage"))

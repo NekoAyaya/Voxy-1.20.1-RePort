@@ -31,14 +31,12 @@ void main() {
     ivec3 pos = (((ipos<<detail)-baseSectionPos)<<5);
 
     //TODO maybe make the size expansion 0.5 (or maybe get rid of it all together?)
-    const int EXPANSION = 1;
-    ivec3 offset = aabbOffset-1;
-    offset += ivec3(gl_VertexID&1, (gl_VertexID>>2)&1, (gl_VertexID>>1)&1)*(size+2*EXPANSION);
+    const float EXPANSION = 1.0f;
+    vec3 offset = aabbOffset-EXPANSION;
+    offset += vec3(gl_VertexID&1, (gl_VertexID>>2)&1, (gl_VertexID>>1)&1)*(size+2*EXPANSION);
 
-    pos += offset*(1<<detail);
-
-    gl_Position = MVP * vec4(vec3(pos),1);
-    gl_Position.z -= 0.00001f * gl_Position.w;
+    gl_Position = MVP * vec4(vec3(pos)+offset*(1<<detail),1);
+    gl_Position.z -= 0.000001f * gl_Position.w;
 
     #ifdef TAA
     gl_Position.xy += getTAA()*gl_Position.w;//Apply TAA if we have it
