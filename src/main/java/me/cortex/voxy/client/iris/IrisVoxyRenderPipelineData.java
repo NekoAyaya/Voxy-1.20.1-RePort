@@ -319,6 +319,8 @@ public class IrisVoxyRenderPipelineData {
 
     }
 
+    // Type.convert() 已弃用，但 stareval 库尚未提供替代方法
+    @SuppressWarnings("deprecation")
     private static List<UniformWritingHolder> createUniformSet(CustomUniforms cu, IrisShaderPatch patch) {
         // This is a fking awful hack... but it works thinks
 

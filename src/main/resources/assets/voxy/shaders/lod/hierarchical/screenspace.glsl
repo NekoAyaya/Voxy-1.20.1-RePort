@@ -43,6 +43,10 @@ bool insideFrustum = false;
 
 float screenSize = 0.0f;
 
+#ifdef TAA
+vec2 getTAA();
+#endif
+
 UnpackedNode node22;
 //Sets up screenspace with the given node id, returns true on success false on failure/should not continue
 //Accesses data that is setup in the main traversal and is just shared to here
@@ -67,9 +71,9 @@ void setupScreenspace(in UnpackedNode node) {
         return;
     }
 
-    vec4 P000 = VP * vec4(basePos, 1);
-    mat3x4 Axis = mat3x4(VP) * float(32<<node.lodLevel);
-
+    //TODO: CHECK THIS IS AT ALL RIGHT
+    vec4 P000 = MVP * vec4(basePos, 1);
+    mat3x4 Axis = mat3x4(MVP)*float(32<<node.lodLevel);
     vec4 P100 = Axis[0] + P000;
     vec4 P001 = Axis[2] + P000;
     vec4 P101 = Axis[2] + P100;
@@ -77,6 +81,15 @@ void setupScreenspace(in UnpackedNode node) {
     vec4 P110 = Axis[1] + P100;
     vec4 P011 = Axis[1] + P001;
     vec4 P111 = Axis[1] + P101;
+
+    //vec4 P000 = MVP * vec4(basePos, 1);
+    //vec4 P100 = MVP * vec4(basePos+vec3(1,0,0)*(32<<node.lodLevel), 1);
+    //vec4 P001 = MVP * vec4(basePos+vec3(0,0,1)*(32<<node.lodLevel), 1);
+    //vec4 P101 = MVP * vec4(basePos+vec3(1,0,1)*(32<<node.lodLevel), 1);
+    //vec4 P010 = MVP * vec4(basePos+vec3(0,1,0)*(32<<node.lodLevel), 1);
+    //vec4 P110 = MVP * vec4(basePos+vec3(1,1,0)*(32<<node.lodLevel), 1);
+    //vec4 P011 = MVP * vec4(basePos+vec3(0,1,1)*(32<<node.lodLevel), 1);
+    //vec4 P111 = MVP * vec4(basePos+vec3(1,1,1)*(32<<node.lodLevel), 1);
 
 
     //Perspective divide + convert to screenspace (i.e. range 0->1 if within viewport)
@@ -116,6 +129,13 @@ void setupScreenspace(in UnpackedNode node) {
     minBB = min(min(min(p000, p100), min(p001, p101)), min(min(p010, p110), min(p011, p111)));
     maxBB = max(max(max(p000, p100), max(p001, p101)), max(max(p010, p110), max(p011, p111)));
 
+
+    #ifdef TAA
+    vec2 taaValue = getTAA()*0.5f;//Note! this might be need tobe *0.5f
+    minBB.xy += taaValue;
+    maxBB.xy += taaValue;
+    #endif
+
     minBB = clamp(minBB, vec3(0), vec3(1));
     maxBB = clamp(maxBB, vec3(0), vec3(1));
 }
@@ -128,6 +148,12 @@ bool outsideFrustum() {
 }
 
 bool isCulledByHiz() {
+    //if (node22.lodLevel!=0) return false;
+
+    //Things start breaking down if the area is the entire scree, no idea why, just abort if we hit this case
+    //if ((maxBB.xy-minBB.xy)==vec2(1.0f)) return false;
+    if (any(lessThan(abs(maxBB.xy-minBB.xy-vec2(1.0f)), vec2(0.000001f)))) return false;
+
     ivec2 ssize = ivec2(packedHizSize>>16,packedHizSize&0xFFFF);
     vec2 size = (maxBB.xy-minBB.xy)*ssize;
     float miplevel = log2(max(max(size.x, size.y),1));
@@ -138,8 +164,8 @@ bool isCulledByHiz() {
 
     int ml = int(miplevel);
     ssize = max(ivec2(1), ssize>>ml);
-    ivec2 mxbb = min(ivec2(maxBB.xy*ssize),ssize-1);
-    ivec2 mnbb = ivec2(minBB.xy*ssize);
+    ivec2 mxbb = min(ivec2(ceil(maxBB.xy*ssize)),ssize-1);
+    ivec2 mnbb = ivec2(floor(minBB.xy*ssize));
 
     float pointSample = -1.0f;
     //float pointSample2 = 0.0f;
@@ -152,8 +178,7 @@ bool isCulledByHiz() {
         }
     }
     //pointSample = mix(pointSample, pointSample2, pointSample<=0.000001f);
-
-    return pointSample<=minBB.z;
+    return pointSample<minBB.z-0.000001f;;////(minBB.z*2-1);
 }
 
 

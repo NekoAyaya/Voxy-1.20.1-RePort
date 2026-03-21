@@ -66,10 +66,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
             .add(ShaderType.COMPUTE, "voxy:lod/gl46/prep.comp")
             .compile();
 
-    private final Shader cullShader = Shader.make()
-            .add(ShaderType.VERTEX, "voxy:lod/gl46/cull/raster.vert")
-            .add(ShaderType.FRAGMENT, "voxy:lod/gl46/cull/raster.frag")
-            .compile();
+    private final Shader cullShader;
 
     private final Shader prefixSumShader = Shader.make()
             //Use subgroup prefix sum if possible otherwise use dodgy... slow prefix sum
@@ -125,6 +122,19 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
             this.translucentTerrainShader = tryCompilePatchedOrNormal(builder, translucentFrag, frag);
         } else {
             this.translucentTerrainShader = this.terrainShader;
+        }
+
+        if (this.pipeline.hasTAA()) {
+            this.cullShader = Shader.make()
+                    .addSource(ShaderType.VERTEX, ShaderLoader.parse("voxy:lod/gl46/cull/raster.vert")+"\n\n\n\n"+pipeline.taaFunction("getTAA"))
+                    .define("TAA")
+                    .add(ShaderType.FRAGMENT, "voxy:lod/gl46/cull/raster.frag")
+                    .compile();
+        } else {
+            this.cullShader = Shader.make()
+                    .add(ShaderType.VERTEX, "voxy:lod/gl46/cull/raster.vert")
+                    .add(ShaderType.FRAGMENT, "voxy:lod/gl46/cull/raster.frag")
+                    .compile();
         }
     }
 
@@ -268,6 +278,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
 
         {//Test occlusion
             this.cullShader.bind();
+            if (this.pipeline.hasTAA()) this.pipeline.bindUniforms();//Used for shader TAA
             if (Capabilities.INSTANCE.repFragTest) {
                 glEnable(GL_REPRESENTATIVE_FRAGMENT_TEST_NV);
             }
@@ -279,6 +290,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
             glBindBuffer(GL_DRAW_INDIRECT_BUFFER, viewport.drawCountCallBuffer.id);
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, SharedIndexBuffer.INSTANCE.id());
             glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LEQUAL);
             glColorMask(false, false, false, false);
             glDepthMask(false);
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT|GL_COMMAND_BARRIER_BIT);

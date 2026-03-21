@@ -53,13 +53,17 @@ public class Logger {
         String error = (INSERT_CLASS?("["+callClsName()+"]: "):"") + Stream.of(args).map(Logger::objToString).collect(Collectors.joining(" "));
         LOGGER.error(error, throwable);
         if (VoxyCommon.IS_IN_MINECRAFT && !VoxyCommon.IS_DEDICATED_SERVER) {
-            var instance = Minecraft.getInstance();
-            if (instance != null) {
-                instance.executeIfPossible(() -> {
-                    var player = Minecraft.getInstance().player;
-                    if (player != null) player.displayClientMessage(Component.literal(error), true);
-                });
-            }
+            showInHUD(error);
+        }
+    }
+
+    public static void showInHUD(String msg) {
+        var instance = Minecraft.getInstance();
+        if (instance != null) {
+            instance.executeIfPossible(() -> {
+                var player = Minecraft.getInstance().player;
+                if (player != null) instance.getChatListener().handleSystemMessage(Component.literal(msg), true);
+            });
         }
     }
 
@@ -76,9 +80,9 @@ public class Logger {
         LOGGER.warn((INSERT_CLASS?("["+callClsName()+"]: "):"") + Stream.of(args).map(Logger::objToString).collect(Collectors.joining(" ")), throwable);
     }
 
-    public static void info(Object... args) {
+    public static String info(Object... args) {
         if (SHUTUP||SHUTUP_INFO) {
-            return;
+            return "";
         }
         Throwable throwable = null;
         for (var i : args) {
@@ -86,7 +90,9 @@ public class Logger {
                 throwable = (Throwable) i;
             }
         }
-        LOGGER.info((INSERT_CLASS?("["+callClsName()+"]: "):"") + Stream.of(args).map(Logger::objToString).collect(Collectors.joining(" ")), throwable);
+        var val = (INSERT_CLASS?("["+callClsName()+"]: "):"") + Stream.of(args).map(Logger::objToString).collect(Collectors.joining(" "));
+        LOGGER.info(val, throwable);
+        return val;
     }
 
     private static String objToString(Object obj) {
